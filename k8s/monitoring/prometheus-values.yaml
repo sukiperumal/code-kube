@@ -1,0 +1,62 @@
+## Prometheus Operator Values
+## This configuration includes Thanos integration
+
+# Default namespace for resources
+namespaceOverride: monitoring
+
+# Enable Thanos sidecar for Prometheus
+prometheus:
+  prometheusSpec:
+    # Enable Thanos sidecar
+    thanos:
+      image: quay.io/thanos/thanos:v0.29.0
+      version: v0.29.0
+      # This would normally point to an object storage like S3 or GCS
+      # For demo purposes, we'll use a local emulation
+      objectStorageConfig:
+        key: thanos.yaml
+        name: thanos-objstore-config
+    
+    # Configure additional resources for metric collection
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    
+    # Set retention time - short for demo purposes
+    retention: 4h
+    
+    # Resource limits for Prometheus
+    resources:
+      requests:
+        memory: 1Gi
+        cpu: 500m
+      limits:
+        memory: 2Gi
+        cpu: 1000m
+
+# Configure Grafana
+grafana:
+  enabled: true
+  adminPassword: prom-operator
+  
+  # Provision additional dashboards
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# Configure AlertManager
+alertmanager:
+  enabled: true
+  
+# Thanos related components
+thanosRuler:
+  enabled: false 

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-metrics
+  namespace: default
+  labels:
+    app: stress-metrics
+spec:
+  selector:
+    app: stress-test
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP 
