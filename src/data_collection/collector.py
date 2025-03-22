@@ -9,14 +9,31 @@ from datetime import datetime, timedelta
 import kubernetes.client
 import kubernetes.config
 from prometheus_api_client import PrometheusConnect
+from .enhanced_metrics import EnhancedMetricsCollector
+import csv
 
 class KubernetesMetricsCollector:
-    """Collect various metrics from a Kubernetes cluster using the Prometheus API."""
+    """Class to collect Kubernetes metrics from Prometheus."""
+    
+    METRICS_CATEGORIES = [
+        "container_runtime",
+        "service",
+        "apiserver",
+        "etcd", 
+        "loadbalancer",
+        "ingress",
+        "crd",
+        "scheduling",
+        "resource_quota",
+        "node",
+        "pod"
+    ]
     
     def __init__(self, prometheus_url="http://prometheus-server.monitoring.svc.cluster.local:9090"):
-        """Initialize the collector with the Prometheus URL."""
+        """Initialize the collector with Prometheus connection."""
         self.prometheus_url = prometheus_url
-        self.prom = PrometheusConnect(url=prometheus_url, disable_ssl=True)
+        self.prometheus_connector = self._init_prometheus_connector()
+        self.enhanced_metrics_collector = EnhancedMetricsCollector(prometheus_url=prometheus_url)
         
         # Initialize Kubernetes client
         kubernetes.config.load_kube_config()
@@ -34,7 +51,7 @@ class KubernetesMetricsCollector:
         if end_time is None:
             end_time = datetime.now()
             
-        result = self.prom.custom_query_range(
+        result = self.prometheus_connector.custom_query_range(
             query=query,
             start_time=start_time,
             end_time=end_time,
@@ -112,98 +129,238 @@ class KubernetesMetricsCollector:
         
         return events
     
-    def collect_metrics(self, duration_minutes=30, step="15s", namespaces=None, cluster_issue_type=None):
-        """Collect all metrics and events for the specified duration and save to file."""
+    def collect_metrics(self, duration_minutes=30, step="15s", namespaces=None, cluster_issue_type=None, categories=None):
+        """
+        Collect all metrics for the specified duration.
+        
+        Args:
+            duration_minutes (int): Duration in minutes to collect metrics for
+            step (str): Step interval for Prometheus queries
+            namespaces (list): List of namespaces to collect metrics for
+            cluster_issue_type (str): Type of cluster issue being simulated (if any)
+            categories (list): List of metric categories to collect (defaults to all)
+            
+        Returns:
+            dict: Dictionary of collected metrics
+        """
+        if namespaces is None:
+            namespaces = ["default", "kube-system"]
+            
+        # If no categories specified, collect all
+        if categories is None:
+            categories = self.METRICS_CATEGORIES
+            
+        print(f"Collecting metrics for categories: {categories}")
+            
+        # Calculate time range
         end_time = datetime.now()
         start_time = end_time - timedelta(minutes=duration_minutes)
         
-        # Collect metrics
-        node_metrics = self.collect_node_metrics(start_time, end_time, step)
-        pod_metrics = self.collect_pod_metrics(start_time, end_time, step, namespaces)
-        events = self.collect_events(namespaces)
-        
-        # Combine data
-        data = {
+        # Initialize metrics dictionary
+        metrics = {
             "metadata": {
                 "start_time": start_time.isoformat(),
                 "end_time": end_time.isoformat(),
                 "duration_minutes": duration_minutes,
-                "step": step,
+                "cluster_issue_type": cluster_issue_type,
                 "namespaces": namespaces,
-                "cluster_issue_type": cluster_issue_type  # Store the issue type in metadata
-            },
-            "node_metrics": node_metrics,
-            "pod_metrics": pod_metrics,
-            "events": events
+                "categories": categories
+            }
         }
         
-        # Save to file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        issue_suffix = f"_{cluster_issue_type}" if cluster_issue_type else ""
-        filename = f"data/raw/metrics_{timestamp}{issue_suffix}.json"
-        with open(filename, "w") as f:
-            json.dump(data, f)
+        # Standard collections
+        if "node" in categories:
+            print("Collecting node metrics...")
+            metrics["node"] = self.collect_node_metrics(start_time, end_time, step)
+            
+        if "pod" in categories:
+            print("Collecting pod metrics...")
+            metrics["pod"] = self.collect_pod_metrics(start_time, end_time, step, namespaces)
         
-        print(f"Saved metrics to {filename}")
-        return filename
+        # Enhanced collections
+        if "container_runtime" in categories:
+            print("Collecting container runtime metrics...")
+            metrics["container_runtime"] = self.enhanced_metrics_collector.collect_container_runtime_metrics(
+                start_time, end_time, step, namespaces
+            )
+            
+        if "service" in categories:
+            print("Collecting service metrics...")
+            metrics["service"] = self.enhanced_metrics_collector.collect_service_metrics(
+                start_time, end_time, step, namespaces
+            )
+            
+        if "apiserver" in categories:
+            print("Collecting API server metrics...")
+            metrics["apiserver"] = self.enhanced_metrics_collector.collect_apiserver_metrics(
+                start_time, end_time, step
+            )
+            
+        if "etcd" in categories:
+            print("Collecting etcd metrics...")
+            metrics["etcd"] = self.enhanced_metrics_collector.collect_etcd_metrics(
+                start_time, end_time, step
+            )
+            
+        if "loadbalancer" in categories:
+            print("Collecting load balancer metrics...")
+            metrics["loadbalancer"] = self.enhanced_metrics_collector.collect_loadbalancer_metrics(
+                start_time, end_time, step
+            )
+            
+        if "ingress" in categories:
+            print("Collecting ingress metrics...")
+            metrics["ingress"] = self.enhanced_metrics_collector.collect_ingress_metrics(
+                start_time, end_time, step
+            )
+            
+        if "crd" in categories:
+            print("Collecting CRD metrics...")
+            metrics["crd"] = self.enhanced_metrics_collector.collect_crd_metrics(
+                start_time, end_time, step
+            )
+            
+        if "scheduling" in categories:
+            print("Collecting scheduling metrics...")
+            metrics["scheduling"] = self.enhanced_metrics_collector.collect_scheduling_metrics(
+                start_time, end_time, step
+            )
+            
+        if "resource_quota" in categories:
+            print("Collecting resource quota metrics...")
+            metrics["resource_quota"] = self.enhanced_metrics_collector.collect_resource_quota_metrics(
+                start_time, end_time, step, namespaces
+            )
+        
+        # Collect events
+        print("Collecting events...")
+        metrics["events"] = self.collect_events(namespaces)
+        
+        # Save raw metrics to file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"data/raw/metrics_{timestamp}.json"
+        
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        with open(output_file, "w") as f:
+            json.dump(metrics, f, indent=2, default=str)
+            
+        print(f"Raw metrics saved to {output_file}")
+        
+        # Process metrics to tabular format
+        processed_file = self.process_metrics(output_file)
+        
+        return {
+            "raw_file": output_file,
+            "processed_file": processed_file,
+            "metrics": metrics
+        }
     
     def process_metrics(self, raw_file):
-        """Process the raw metrics into a tabular format suitable for ML."""
+        """Process raw metrics JSON file to tabular format CSV."""
+        print(f"Processing metrics from {raw_file}...")
+        
         with open(raw_file, "r") as f:
-            data = json.load(f)
+            metrics = json.load(f)
         
         # Extract metadata
-        metadata = data["metadata"]
-        cluster_issue_type = metadata.get("cluster_issue_type", "none")
+        metadata = metrics.get("metadata", {})
+        start_time = metadata.get("start_time", "")
+        end_time = metadata.get("end_time", "")
+        duration_minutes = metadata.get("duration_minutes", 0)
+        cluster_issue_type = metadata.get("cluster_issue_type", "")
         
-        # Combine all metrics into a single dataframe
-        dfs = []
+        # Generate output file name
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"data/processed/metrics_{timestamp}.csv"
         
-        # Process node metrics
-        for metric_name, metric_data in data["node_metrics"].items():
-            for time_series in metric_data:
-                metric_df = pd.DataFrame({
-                    "timestamp": [datetime.fromtimestamp(x[0]) for x in time_series["values"]],
-                    f"{metric_name}_{time_series['metric'].get('node', 'unknown')}": [float(x[1]) for x in time_series["values"]]
-                })
-                dfs.append(metric_df.set_index("timestamp"))
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
-        # Process pod metrics
-        for metric_name, metric_data in data["pod_metrics"].items():
-            for time_series in metric_data:
-                pod_name = time_series["metric"].get("pod", "unknown")
-                namespace = time_series["metric"].get("namespace", "unknown")
-                column_name = f"{metric_name}_{namespace}_{pod_name}"
+        # Process metrics into tabular format
+        rows = []
+        
+        # Process time series data
+        node_metrics = metrics.get("node", {})
+        pod_metrics = metrics.get("pod", {})
+        
+        # Get timestamps from any available time series
+        timestamps = []
+        for metric_name, metric_data in node_metrics.items():
+            for node, time_series in metric_data.items():
+                timestamps = [entry[0] for entry in time_series]
+                break
+            if timestamps:
+                break
                 
-                metric_df = pd.DataFrame({
-                    "timestamp": [datetime.fromtimestamp(x[0]) for x in time_series["values"]],
-                    column_name: [float(x[1]) for x in time_series["values"]]
-                })
-                dfs.append(metric_df.set_index("timestamp"))
+        if not timestamps:
+            # Check pod metrics if node metrics didn't have timestamps
+            for metric_name, metric_data in pod_metrics.items():
+                for pod_key, time_series in metric_data.items():
+                    timestamps = [entry[0] for entry in time_series]
+                    break
+                if timestamps:
+                    break
         
-        # Combine all dataframes
-        if dfs:
-            combined_df = pd.concat(dfs, axis=1)
-            # Fill NaN values - replacing deprecated methods
-            combined_df = combined_df.ffill().bfill().fillna(0)
+        # Create row for each timestamp
+        for timestamp_index, timestamp in enumerate(timestamps):
+            dt = datetime.fromtimestamp(timestamp)
             
-            # Add event data as binary features
-            event_df = self.process_events(data["events"], combined_df.index)
-            final_df = pd.concat([combined_df, event_df], axis=1)
+            row = {
+                "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S")
+            }
             
-            # Add cluster_issue_type as a column
-            final_df["cluster_issue_type"] = cluster_issue_type
+            # Add node metrics
+            for metric_name, metric_data in node_metrics.items():
+                for node, time_series in metric_data.items():
+                    if timestamp_index < len(time_series):
+                        value = time_series[timestamp_index][1]
+                        row[f"{metric_name}"] = value
+                        
+            # Add pod metrics
+            for metric_name, metric_data in pod_metrics.items():
+                for pod_key, time_series in metric_data.items():
+                    pod_namespace, pod_name = pod_key.split("|") if "|" in pod_key else (pod_key, "")
+                    if timestamp_index < len(time_series):
+                        value = time_series[timestamp_index][1]
+                        row[f"{metric_name}_{pod_namespace}_{pod_name}"] = value
+                        
+            # Add enhanced metrics for each category
+            for category in self.METRICS_CATEGORIES:
+                if category not in ["node", "pod"] and category in metrics:
+                    category_metrics = metrics.get(category, {})
+                    for metric_name, metric_data in category_metrics.items():
+                        if isinstance(metric_data, dict):
+                            for item_key, time_series in metric_data.items():
+                                if timestamp_index < len(time_series):
+                                    value = time_series[timestamp_index][1]
+                                    row[f"{category}_{metric_name}_{item_key}"] = value
+                        elif isinstance(metric_data, list) and metric_data and timestamp_index < len(metric_data):
+                            value = metric_data[timestamp_index][1]
+                            row[f"{category}_{metric_name}"] = value
             
-            # Save to file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            issue_suffix = f"_{cluster_issue_type}" if cluster_issue_type else ""
-            processed_file = f"data/processed/processed_metrics_{timestamp}{issue_suffix}.csv"
-            final_df.to_csv(processed_file)
-            print(f"Saved processed metrics to {processed_file}")
-            return processed_file
+            # Add cluster issue type
+            row["issue_type"] = cluster_issue_type
+            
+            # Process events associated with this timestamp
+            self.process_events(metrics.get("events", {}), timestamp_index)
+            
+            # Add the row
+            rows.append(row)
+            
+        # Write to CSV
+        if rows:
+            headers = list(rows[0].keys())
+            
+            with open(output_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+                
+            print(f"Processed metrics saved to {output_file}")
         else:
-            print("No metrics to process")
-            return None
+            print("No data to write!")
+            
+        return output_file
     
     def process_events(self, events, index):
         """Process events into a dataframe with event types as columns."""
@@ -290,7 +447,7 @@ def main():
             return 1
     
     # Collect metrics
-    raw_file = collector.collect_metrics(
+    metrics_dict = collector.collect_metrics(
         duration_minutes=args.duration,
         step=args.step,
         namespaces=args.namespaces,
@@ -298,11 +455,9 @@ def main():
     )
     
     # Process metrics if requested
-    if args.process and raw_file:
-        processed_file = collector.process_metrics(raw_file)
-        if processed_file:
-            print(f"Data collection and processing complete.")
-            return 0
+    if args.process and metrics_dict["processed_file"]:
+        print(f"Data collection and processing complete.")
+        return 0
     
     return 0
 
